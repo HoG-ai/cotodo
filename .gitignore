@@ -25,3 +25,12 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Docs site (VitePress)
+docs/node_modules/
+docs/dist/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
+# Collaboration
+TODO.md
