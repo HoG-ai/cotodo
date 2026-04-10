@@ -1,0 +1,36 @@
+[project]
+name = "cotodo"
+version = "0.1.0"
+description = "Collaborative TODO protocol for human-AI async workflows"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+dependencies = []
+authors = [
+    {name = "HoG-ai"},
+]
+keywords = ["agent", "ai", "todo", "collaboration", "skill"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/HoG-ai/cotodo"
+Repository = "https://github.com/HoG-ai/cotodo"
+
+[project.scripts]
+cotodo = "cotodo.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["skills/cotodo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
