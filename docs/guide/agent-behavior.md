@@ -8,34 +8,36 @@ Defines Agent behavior logic in the cotodo collaboration workflow. For file form
 ## System Architecture
 
 ```
-Human -> TODO.md <- cotodo scan (read-only) <- Agent
-              ^
-        Agent edits via terminal commands (sed/printf/cat)
+Human -> TODO.md <- cotodo scan    (read) <- Agent
+              ^         cotodo reply (write)
+              |
+        atomic file operations
 ```
 
 - **Human**: Directly reads and writes TODO.md in the editor
-- **Agent**: Gets structured state (JSON) via `cotodo scan`, edits the file via terminal commands
-- **cotodo**: CLI tool with four scan mode combinations:
+- **Agent**: Reads state via `cotodo scan`, writes back via `cotodo reply`
+- **cotodo**: CLI tool, two core commands:
 
 | Command | Behavior |
 |---------|----------|
-| `cotodo scan` | Read-only, returns highest priority topic + marker |
-| `cotodo scan --clean` | Deletes @delete topics, then returns highest priority topic |
-| `cotodo scan --all` | Read-only, returns all topics |
-| `cotodo scan --clean --all` | Deletes @delete topics, then returns all topics |
+| `cotodo scan [--clean] [--all]` | Parse TODO.md, return JSON state |
+| `cotodo scan --clean --take` | Clean + mark highest priority as [processing] + return |
+| `cotodo reply <topic> [--compress]` | Write reply (stdin JSON), update conversation + Summary |
 
 ## Agent Loop
 
 Each iteration:
 
 ```
-1. cotodo scan --clean → Get JSON (marker + highest priority topic), cleanup @delete topics
-2. Act based on marker
-3. Execute marker, edit TODO.md
+1. cotodo scan --clean --take → Get JSON + mark topic [processing]
+2. Work on the task based on marker + context + summary
+3. cotodo reply <topic> → Write reply back, clears [processing]
 4. Go to 1
 ```
 
-Agent uses `scan --clean` in normal loops. `scan --all` is for debugging or when a global view is needed.
+- `scan --clean --take` atomically: cleanup @delete → mark highest priority → return JSON
+- `reply` atomically: append conversation + overwrite Summary + manage markers + add User: placeholder
+- `scan --all` is for debugging or when a global view is needed
 
 ## Marker Reference
 
@@ -83,27 +85,27 @@ The `marker` field from `scan --clean` directly tells the Agent what to do:
 **Trigger**: scan returns `marker: "processing"`
 
 **Behavior**:
-1. Agent reads the topic's `context` (content from heading to [processing] line), restores context
+1. Agent reads the topic's `context` and `summary`, restores context
 2. Continues completing the previously interrupted task
-3. Removes `[processing]` marker after completion, writes results
+3. Calls `cotodo reply` to write results
 
 **Note**: `[processing]` means Agent started processing last round but didn't finish (possibly interrupted). This is the highest priority topic marker — must complete in-progress work first.
 
 ### Scenario D: Reply to User Message (over)
 
-**Trigger**: scan returns `marker: "over"`
+**Trigger**: scan returns `marker: "over"` (with `--take`, `over` is already changed to `[processing]`)
 
 **Behavior**:
-1. Change `over` to `[processing]` on that line (so user sees it's being processed)
-2. Read topic `context` to understand user's message
-3. Write `Agent:` reply in the topic
-4. If it's an executable task: append `[pending]` at end of reply (plan but don't execute yet)
-5. Remove `[processing]`, append blank line and `User:` placeholder
-6. When multiple topics have over, process top-to-bottom one by one
+1. Read topic `context` to understand user's message, read `summary` for current plan/conclusion
+2. Call `cotodo reply` with:
+   - `message`: Agent's response to user
+   - `summary`: updated plan/conclusion (if changed)
+   - `marker`: `"pending"` if summary contains an execution plan; `null` otherwise
+3. When multiple topics have over, `scan --take` returns the first; subsequent rounds handle the rest
 
 **After reply state**:
-- Pure reply (no task): topic returns to no-marker state
-- Has task to execute: topic has `[pending]` marker, next round handles as Scenario F
+- Pure reply (no task): topic in no-marker state, summary as conclusion
+- Has task to execute: topic has `[pending]` on Summary, next round handles as Scenario F
 
 ### Scenario E: [processing] and over Coexist
 
@@ -113,19 +115,19 @@ The `marker` field from `scan --clean` directly tells the Agent what to do:
 
 **Agent behavior**:
 1. Current round: receives `processing`, continues completing in-progress task
-2. Removes `[processing]` after completion
+2. Calls `cotodo reply` to write results
 3. Next scan: finds new `over` in that topic, returns `marker: "over"`
 
 **Note**: Consistency first. Cannot interrupt an in-progress task because user appended a message. User's new message is naturally picked up by the next scan round.
 
 ### Scenario F: Execute [pending] Task
 
-**Trigger**: scan returns `marker: "pending"`
+**Trigger**: scan returns `marker: "pending"` (with `--take`, `[pending]` is changed to `[processing]`)
 
 **Behavior**:
-1. Change `[pending]` to `[processing]`
-2. Execute the planned task in the topic
-3. Remove `[processing]` after completion, write brief execution result
+1. Read topic `summary` for the execution plan
+2. Execute the planned task
+3. Call `cotodo reply` with results and updated summary (mark completed items)
 
 ### Scenario G: [pending] and over Coexist
 
@@ -137,10 +139,9 @@ The `marker` field from `scan --clean` directly tells the Agent what to do:
 
 **Agent behavior**:
 1. Process `over` first (scan returns one highest priority topic per round, `over` > `pending`)
-2. After all `over` are replied, scan returns `marker: "pending"`
-3. Before executing, evaluate if `[pending]` plan needs adjustment (user's over may have revised the plan)
-4. Plan unchanged: execute directly
-5. Plan changed: update plan content, re-add `[pending]`, wait for next round
+2. When processing `over` in a topic that had `[pending]`: remove `[pending]` first, reply, then decide whether to re-add
+3. After all `over` are replied, scan returns `marker: "pending"`
+4. Before executing, evaluate if `[pending]` plan needs adjustment (user's over may have revised the plan)
 
 **Note**: User's over may revise existing plans. Align requirements before executing to avoid executing obsolete plans.
 
@@ -156,15 +157,22 @@ The `marker` field from `scan --clean` directly tells the Agent what to do:
 User finishes message, adds over
         |
         v
-   over -> [processing]    Agent starts processing
+   scan --take: over -> [processing]    Agent picks up task
         |
-        +-> Pure reply -> Remove [processing], write Agent: reply + User:
+        v
+   Agent works, then calls reply:
         |
-        +-> Has task -> Remove [processing], write Agent: plan [pending] + User:
-                                |
-                                v
-                    [pending] -> [processing]    Agent starts executing
-                                |
-                                v
-                        Remove [processing], write execution result
+        +-> Pure reply    -> reply removes [processing], writes message + User:
+        |
+        +-> Has plan      -> reply removes [processing], writes message
+        |                    + Summary [pending] + User:
+        |
+        v
+   scan --take: [pending] -> [processing]    Agent picks up plan
+        |
+        v
+   Agent executes, then calls reply:
+        |
+        v
+   reply removes [processing], writes result + updated Summary + User:
 ```

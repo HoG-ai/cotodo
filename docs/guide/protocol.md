@@ -24,12 +24,51 @@ PAUSE:
 
 User: fix the login bug over
 
+Agent: Found the issue — email not normalized.
+
+> **Summary** [pending]
+> - [ ] auth.py#L42 add `.lower()`
+
+User:
+
 ## Topic B @delete
 
 User: old content
 Agent: done
 User:
 ```
+
+## Topic Internal Structure
+
+Each topic has two areas:
+
+1. **Conversation area**: Append-only chronological messages (`User:` / `Agent:` alternating)
+2. **Summary area** (optional): A blockquote section starting with `> **Summary**`, overwritten on each update
+
+```markdown
+## Topic Title
+
+User: first message over
+
+Agent: response here
+
+User: follow-up over
+
+Agent: updated analysis
+
+> **Summary** [pending]
+> - [ ] task 1
+> - [ ] task 2
+
+User:
+```
+
+The Summary area:
+- Starts with a line matching `> **Summary**` (optionally followed by a marker like `[pending]`)
+- Subsequent lines start with `>`
+- Ends at the first non-`>` line (or end of topic)
+- Semantics determined by content: if it contains TODO items (`- [ ] ...`), it's an execution plan; otherwise it's a conclusion
+- Agent determines whether to add `[pending]` based on whether the plan needs execution
 
 ## Markers
 
@@ -81,6 +120,9 @@ The `scan` command parses TODO.md and returns JSON. It supports two output modes
 | `--all` | Read-only, return all topics |
 | `--clean` | Delete `@delete` topics before returning results |
 | `--clean --all` | Delete `@delete` topics, then return all remaining topics |
+| `--take` | Atomically mark highest priority topic as `[processing]` and return it |
+
+`--take` makes the scan operation non-read-only: it changes the topic's marker to `[processing]` before returning JSON, so the user can see the Agent has picked up the task. Typically combined with `--clean`: `cotodo scan --clean --take`.
 
 ### Default Output (highest priority)
 
@@ -90,18 +132,21 @@ The `scan` command parses TODO.md and returns JSON. It supports two output modes
 
 ```json
 {"file": "TODO.md", "marker": "processing",
- "topic": {"title": "Fix bug", "line": 10, "end": 25, "marker_line": 15, "context": "User: ..."}}
+ "topic": {"title": "Fix bug", "line": 10, "end": 25, "marker_line": 15,
+            "context": "User: ...", "summary": "- [ ] auth.py add .lower()"}}
 ```
 
 ```json
 {"file": "TODO.md", "marker": "over",
- "topic": {"title": "Fix bug", "line": 10, "end": 25, "marker_line": 15, "context": "User: ..."},
+ "topic": {"title": "Fix bug", "line": 10, "end": 25, "marker_line": 15,
+            "context": "User: ...", "summary": null},
  "queue_depth": 3}
 ```
 
 ```json
 {"file": "TODO.md", "marker": "pending",
- "topic": {"title": "Fix bug", "line": 10, "end": 25, "marker_line": 22, "context": "Agent: plan..."}}
+ "topic": {"title": "Fix bug", "line": 10, "end": 25, "marker_line": 22,
+            "context": "Agent: plan...", "summary": "- [ ] auth.py add .lower()"}}
 ```
 
 ```json
@@ -151,6 +196,7 @@ The `scan` command parses TODO.md and returns JSON. It supports two output modes
 | `processing` | int \| null | Line number of `[processing]` marker |
 | `pending` | int \| null | Line number of `[pending]` marker (masked to null if `over` or `[processing]` exists) |
 | `context` | string \| null | Text from first non-blank line after heading to active marker |
+| `summary` | string \| null | Content of the `> **Summary**` blockquote section (null if absent) |
 
 ### Normalization Rules
 
@@ -214,3 +260,51 @@ Agent's context includes all messages above (they're part of the topic content).
 ### Context Scope
 
 Agent context = topic heading → active marker line (inclusive, marker text stripped). Content **below** the marker is excluded (may contain user's post-submission additions for the next round).
+
+## Reply Command
+
+The `reply` command writes Agent's response back to a topic. It accepts JSON via stdin and performs atomic file update.
+
+### Usage
+
+```bash
+cotodo reply <topic> [--compress] < input.json
+```
+
+| Flag | Effect |
+|------|--------|
+| (none) | Append message to conversation, overwrite Summary |
+| `--compress` | Replace entire conversation area + Summary (context compression) |
+
+### Input Format (JSON stdin)
+
+```json
+{
+  "message": "Agent response text (appended to conversation with Agent: prefix)",
+  "summary": "Summary content (overwrites existing) | null to keep current",
+  "marker": "pending" | "processing" | null
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | string | Yes | Reply text. Inserted with `Agent:` prefix |
+| `summary` | string \| null | No | Overwrites `> **Summary**` section. `null` or omitted = keep existing |
+| `marker` | string \| null | No | Set marker on Summary line: `"pending"`, `"processing"`, or `null` to clear |
+
+### Reply Behavior
+
+1. Parse input JSON from stdin
+2. Locate the specified topic by title or line number
+3. Append `Agent: {message}` to the conversation area (or replace if `--compress`)
+4. If `summary` is present and non-null: overwrite the `> **Summary**` section (create if absent)
+5. Set/clear marker on the `> **Summary**` line based on `marker` field
+6. Remove `[processing]` (reply means processing is done)
+7. Append `\nUser:\n` placeholder at the end
+8. Atomic file write (`os.replace()` via temp file)
+
+### `--compress` Mode
+
+In compress mode, `message` contains the entire compressed conversation (including `User:` / `Agent:` lines). The command replaces all topic content (between `##` heading and next `##` or EOF) instead of appending.
+
+Use case: when a user requests context compression, Agent summarizes the conversation history and uses `--compress` to replace verbose old content with a concise version.

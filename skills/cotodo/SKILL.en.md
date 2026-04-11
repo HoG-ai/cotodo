@@ -31,6 +31,7 @@ description: 'Shared TODO.md collaboration workflow. Async dialog-based collabor
 
 > `##` heading = one topic/task.
 > User messages start with `User:`, end with `over` when done. Agent changes it to `[processing]` while processing.
+> `> **Summary**` section holds evolving plan/conclusion, overwritten on each update.
 > User can delete old topics and message history anytime. Add `@delete` after heading for Agent to auto-delete the topic.
 > Write `true` after `PAUSE:` to pause Agent and bring up the dialog.
 

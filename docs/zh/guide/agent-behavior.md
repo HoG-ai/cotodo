@@ -8,34 +8,36 @@ description: cotodo 协作工作流中的 Agent 行为逻辑
 ## 系统架构
 
 ```
-Human -> TODO.md <- cotodo scan (只读) <- Agent
-              ^
-        Agent 通过终端命令编辑 (sed/printf/cat)
+Human -> TODO.md <- cotodo scan    (读) <- Agent
+              ^         cotodo reply (写)
+              |
+        原子文件操作
 ```
 
 - **人类**：直接在编辑器里读写 TODO.md
-- **Agent**：通过 `cotodo scan` 获取结构化状态（JSON），通过终端命令编辑文件
-- **cotodo**：CLI 工具，`scan` 命令有四种模式组合：
+- **Agent**：通过 `cotodo scan` 读取状态，通过 `cotodo reply` 写回回复
+- **cotodo**：CLI 工具，两个核心命令：
 
 | 命令 | 行为 |
 |------|------|
-| `cotodo scan` | 只读，返回最高优先级的一个话题 + marker |
-| `cotodo scan --clean` | 删除 @delete 话题后，返回最高优先级话题 |
-| `cotodo scan --all` | 只读，返回所有话题的完整列表 |
-| `cotodo scan --clean --all` | 删除 @delete 话题后，返回所有话题 |
+| `cotodo scan [--clean] [--all]` | 解析 TODO.md，返回 JSON 状态 |
+| `cotodo scan --clean --take` | 清理 + 标记最高优先级为 [processing] + 返回 |
+| `cotodo reply <topic> [--compress]` | 写入回复（stdin JSON），更新对话 + Summary |
 
 ## Agent 循环逻辑
 
 每一轮循环：
 
 ```
-1. cotodo scan --clean → 获取 JSON（marker + 最高优先级话题），同时清理 @delete 话题
-2. 根据 marker 决定行为
-3. 执行 marker、编辑 TODO.md
+1. cotodo scan --clean --take → 获取 JSON + 标记话题 [processing]
+2. 根据 marker + context + summary 处理任务
+3. cotodo reply <topic> → 写回回复，清除 [processing]
 4. 回到 1
 ```
 
-Agent 日常循环只用 `scan --clean`。`scan --all` 供调试或需要全局视图时使用。
+- `scan --clean --take` 原子操作：清理 @delete → 标记最高优先级 → 返回 JSON
+- `reply` 原子操作：追加对话 + 覆盖 Summary + 管理标记 + 加 User: 占位
+- `scan --all` 供调试或需要全局视图时使用
 
 ## 行为优先级
 
@@ -83,27 +85,27 @@ Agent 日常循环只用 `scan --clean`。`scan --all` 供调试或需要全局�
 **触发**：scan 返回 `marker: "processing"`
 
 **行为**：
-1. Agent 读取该话题的 `context`（从标题到 [processing] 行的内容），恢复上下文
+1. Agent 读取话题的 `context` 和 `summary`，恢复上下文
 2. 继续完成上一轮中断的任务
-3. 完成后删除 `[processing]` 标记，写入结果
+3. 调用 `cotodo reply` 写入结果
 
 **说明**：`[processing]` 表示 Agent 上一轮开始处理但未完成（可能被中断）。这是最高优先级的话题标记——必须先完成正在进行的工作。
 
 ### 场景 D：回复用户新消息（over）
 
-**触发**：scan 返回 `marker: "over"`
+**触发**：scan 返回 `marker: "over"`（使用 `--take` 时，`over` 已被自动改为 `[processing]`）
 
 **行为**：
-1. 将该行的 `over` 改为 `[processing]`（让用户看到正在处理）
-2. 读取话题 `context` 理解用户消息
-3. 在话题内写 `Agent:` 回复
-4. 如果是可执行的任务：回复末尾加 `[pending]`（方案暂不执行，等用户确认）
-5. 删除 `[processing]`，追加空行和 `User:` 占位
-6. 多个话题有 over 时，从上到下逐个处理
+1. 读取话题 `context` 理解用户消息，读取 `summary` 了解当前计划/结论
+2. 调用 `cotodo reply` 传入：
+   - `message`：对用户的回复
+   - `summary`：更新后的计划/结论（如有变化）
+   - `marker`：如果 summary 包含执行计划则为 `"pending"`，否则 `null`
+3. 多个话题有 over 时，`scan --take` 返回第一个，后续轮次处理其余
 
 **回复后状态**：
-- 纯回复（无任务）：话题回到无标记状态
-- 有待执行任务：话题有 `[pending]` 标记，下一轮按场景 F 处理
+- 纯回复（无任务）：话题无标记，summary 作为结论
+- 有待执行任务：Summary 上有 `[pending]`，下一轮按场景 F 处理
 
 ### 场景 E：同话题 [processing] 和 over 并存
 
@@ -113,19 +115,19 @@ Agent 日常循环只用 `scan --clean`。`scan --all` 供调试或需要全局�
 
 **Agent 行为**：
 1. 当前轮：收到 `processing`，继续完成正在进行的任务
-2. 完成后删除 `[processing]`
+2. 调用 `cotodo reply` 写入结果
 3. 下一轮 scan：发现该话题有新的 `over`，返回 `marker: "over"`
 
 **说明**：一致性优先。不能因用户追加消息而中断 in-progress 任务。用户的新消息等当前任务完成后自然被下一轮 scan 捕获。
 
 ### 场景 F：执行 [pending] 任务
 
-**触发**：scan 返回 `marker: "pending"`
+**触发**：scan 返回 `marker: "pending"`（使用 `--take` 时，`[pending]` 被自动改为 `[processing]`）
 
 **行为**：
-1. 将 `[pending]` 改为 `[processing]`
-2. 执行该话题中规划的任务
-3. 完成后删除 `[processing]`，在话题内写简要执行结果
+1. 读取话题 `summary` 了解执行计划
+2. 执行已规划的任务
+3. 调用 `cotodo reply` 写入结果和更新后的 summary（标记已完成项）
 
 ### 场景 G：[pending] 和 over 并存
 
@@ -137,10 +139,9 @@ Agent 日常循环只用 `scan --clean`。`scan --all` 供调试或需要全局�
 
 **Agent 行为**：
 1. 先处理 `over`（scan 每轮只返回最高优先级的一个话题，`over` > `pending`）
-2. 所有 `over` 回复完后，scan 才会返回 `marker: "pending"`
-3. 执行前评估 `[pending]` 方案是否需要调整（用户的 over 可能修正了方案）
-4. 方案不变：直接执行
-5. 方案变更：更新方案内容，重新加 `[pending]`，等下轮执行
+2. 处理含 `[pending]` 话题的 `over` 时：先移除 `[pending]`，回复后再决定是否重新添加
+3. 所有 `over` 回复完后，scan 才会返回 `marker: "pending"`
+4. 执行前评估 `[pending]` 方案是否需要调整（用户的 over 可能修正了方案）
 
 **说明**：用户的 over 可能修正已有方案。先对齐需求再执行，避免执行废弃方案。
 
@@ -156,15 +157,22 @@ Agent 日常循环只用 `scan --clean`。`scan --all` 供调试或需要全局�
 用户写完消息加 over
         |
         v
-   over -> [processing]    Agent 开始处理
+   scan --take: over -> [processing]    Agent 领取任务
         |
-        +-> 纯回复 -> 删除 [processing]，写 Agent: 回复 + User:
+        v
+   Agent 处理后调用 reply：
         |
-        +-> 有任务 -> 删除 [processing]，写 Agent: 方案 [pending] + User:
-                                |
-                                v
-                    [pending] -> [processing]    Agent 开始执行
-                                |
-                                v
-                        删除 [processing]，写执行结果
+        +-> 纯回复    -> reply 移除 [processing]，写消息 + User:
+        |
+        +-> 有方案    -> reply 移除 [processing]，写消息
+        |                + Summary [pending] + User:
+        |
+        v
+   scan --take: [pending] -> [processing]    Agent 领取方案
+        |
+        v
+   Agent 执行后调用 reply：
+        |
+        v
+   reply 移除 [processing]，写结果 + 更新 Summary + User:
 ```

@@ -24,12 +24,51 @@ PAUSE:
 
 User: 修复登录 bug over
 
+Agent: 发现了问题——邮箱没有归一化。
+
+> **Summary** [pending]
+> - [ ] auth.py#L42 添加 `.lower()`
+
+User:
+
 ## 话题 B @delete
 
 User: 旧内容
 Agent: 已完成
 User:
 ```
+
+## 话题内部结构
+
+每个话题包含两个区域：
+
+1. **对话区**：只追加的时间序消息（`User:` / `Agent:` 交替）
+2. **Summary 区**（可选）：以 `> **Summary**` 开头的引用块，每次更新时覆盖写入
+
+```markdown
+## 话题标题
+
+User: 第一条消息 over
+
+Agent: 回复内容
+
+User: 追问 over
+
+Agent: 更新分析
+
+> **Summary** [pending]
+> - [ ] 任务 1
+> - [ ] 任务 2
+
+User:
+```
+
+Summary 区规则：
+- 以 `> **Summary**` 行开始（后面可选跟 `[pending]` 等标记）
+- 后续行以 `>` 开头
+- 遇到第一个非 `>` 行结束（或话题末尾）
+- 语义由内容决定：包含 TODO 项（`- [ ] ...`）则为执行计划，否则为结论
+- Agent 根据是否需要执行来决定是否标记 `[pending]`
 
 ## 标记符号
 
@@ -81,6 +120,9 @@ PAUSE:          ← 不暂停（仅空白）
 | `--all` | 只读，返回所有话题 |
 | `--clean` | 先删除 `@delete` 话题，再返回结果 |
 | `--clean --all` | 删除 `@delete` 话题后，返回所有剩余话题 |
+| `--take` | 原子地将最高优先级话题标为 `[processing]` 并返回 |
+
+`--take` 使 scan 操作具有写入副作用：返回 JSON 前将话题标记改为 `[processing]`，让用户看到 Agent 已领取任务。通常与 `--clean` 组合使用：`cotodo scan --clean --take`。
 
 ### 默认输出（最高优先级）
 
@@ -90,18 +132,21 @@ PAUSE:          ← 不暂停（仅空白）
 
 ```json
 {"file": "TODO.md", "marker": "processing",
- "topic": {"title": "修复 bug", "line": 10, "end": 25, "marker_line": 15, "context": "User: ..."}}
+ "topic": {"title": "修复 bug", "line": 10, "end": 25, "marker_line": 15,
+            "context": "User: ...", "summary": "- [ ] auth.py 添加 .lower()"}}
 ```
 
 ```json
 {"file": "TODO.md", "marker": "over",
- "topic": {"title": "修复 bug", "line": 10, "end": 25, "marker_line": 15, "context": "User: ..."},
+ "topic": {"title": "修复 bug", "line": 10, "end": 25, "marker_line": 15,
+            "context": "User: ...", "summary": null},
  "queue_depth": 3}
 ```
 
 ```json
 {"file": "TODO.md", "marker": "pending",
- "topic": {"title": "修复 bug", "line": 10, "end": 25, "marker_line": 22, "context": "Agent: 方案..."}}
+ "topic": {"title": "修复 bug", "line": 10, "end": 25, "marker_line": 22,
+            "context": "Agent: 方案...", "summary": "- [ ] auth.py 添加 .lower()"}}
 ```
 
 ```json
@@ -151,6 +196,7 @@ PAUSE:          ← 不暂停（仅空白）
 | `processing` | int \| null | `[processing]` 标记的行号 |
 | `pending` | int \| null | `[pending]` 标记的行号（存在 `over` 或 `[processing]` 时屏蔽为 null） |
 | `context` | string \| null | 从标题后第一个非空行到活跃标记行的文本 |
+| `summary` | string \| null | `> **Summary**` 引用块的内容（无则 null） |
 
 ### 规范化规则
 
@@ -214,3 +260,51 @@ Agent 的上下文包含上面所有消息（它们是话题内容的一部分�
 ### 上下文范围
 
 Agent 上下文 = 话题标题 → 活跃标记行（含该行，但标记文本被去除）。标记行之下的内容被排除（可能是用户提交后添加的補充，留待下一轮处理）。
+
+## reply 命令
+
+`reply` 命令将 Agent 的回复写回话题。通过 stdin 接收 JSON，执行原子文件更新。
+
+### 用法
+
+```bash
+cotodo reply <topic> [--compress] < input.json
+```
+
+| 标志 | 效果 |
+|------|------|
+| （无） | 追加消息到对话区，覆盖写 Summary |
+| `--compress` | 替换整个对话区 + Summary（上下文压缩） |
+
+### 输入格式（JSON stdin）
+
+```json
+{
+  "message": "Agent 回复文本（追加到对话，自动加 Agent: 前缀）",
+  "summary": "Summary 内容（覆盖写）| null 保持现有",
+  "marker": "pending" | "processing" | null
+}
+```
+
+| 字段 | 类型 | 必须 | 说明 |
+|------|------|------|------|
+| `message` | string | 是 | 回复文本，自动添加 `Agent:` 前缀 |
+| `summary` | string \| null | 否 | 覆盖写 `> **Summary**` 区。`null` 或缺省 = 保持现有 |
+| `marker` | string \| null | 否 | 设置 Summary 行上的标记：`"pending"`、`"processing"` 或 `null` 清除 |
+
+### reply 行为
+
+1. 从 stdin 解析 JSON
+2. 通过标题或行号定位指定话题
+3. 将 `Agent: {message}` 追加到对话区（`--compress` 模式则替换）
+4. 若 `summary` 非 null：覆盖写 `> **Summary**` 区（不存在则创建）
+5. 根据 `marker` 字段设置/清除 `> **Summary**` 行上的标记
+6. 移除 `[processing]`（reply 意味着处理完成）
+7. 末尾追加 `\nUser:\n` 占位
+8. 原子文件写入（`os.replace()` + temp file）
+
+### `--compress` 模式
+
+压缩模式下，`message` 包含整个压缩后的对话（含 `User:` / `Agent:` 行）。命令替换话题的全部内容（`##` 标题到下一个 `##` 或 EOF 之间）而非追加。
+
+用途：用户要求压缩上下文时，Agent 提炼对话历史，用 `--compress` 将冗长内容替换为简洁版本。

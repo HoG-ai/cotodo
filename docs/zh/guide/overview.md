@@ -36,6 +36,7 @@ curl -sSL https://raw.githubusercontent.com/HoG-ai/cotodo/main/install.sh | bash
 
 > `##` 标题 = 一个话题/任务。
 > 用户消息用 `User:` 开头，写完末尾加 `over`。
+> `> **Summary**` 区域保存持续演进的计划/结论。
 > 标题后加 `@delete` 可让 Agent 自动删除该话题。
 > `PAUSE:` 后写 `true` 可暂停 Agent。
 

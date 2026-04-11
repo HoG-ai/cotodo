@@ -36,6 +36,7 @@ curl -sSL https://raw.githubusercontent.com/HoG-ai/cotodo/main/install.sh | bash
 
 > `##` heading = one topic/task.
 > User messages start with `User:`, end with `over` when done.
+> `> **Summary**` section holds evolving plan/conclusion.
 > Add `@delete` after heading for Agent to auto-delete the topic.
 > Write `true` after `PAUSE:` to pause Agent.
 
