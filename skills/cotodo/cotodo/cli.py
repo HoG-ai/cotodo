@@ -1,6 +1,7 @@
 """cotodo CLI — entry point and argument routing."""
 
 import json
+import os
 import sys
 
 USAGE = """\
@@ -13,16 +14,13 @@ Commands:
     cotodo init [FILE]  Create a TODO.md template (and add to .gitignore)
                         --no-gitignore  Skip .gitignore update
 
-    cotodo scan [FILE] [--clean] [--all] [--take]
+    cotodo scan [FILE] [--all]
                         Parse TODO.md and output state (JSON)
-                        --clean   Remove @delete topics from file
-                        --all     Return all topics (default: highest priority only)
-                        --take    Atomically mark highest priority topic as [processing]
+                        Default: auto-init + clean @delete + mark [processing]
+                        --all     Return all topics (read-only, for debugging)
 
-    cotodo reply <id> [--compress]
-                        Write a reply to a topic by ID (reads JSON from stdin)
-                        --compress  Replace entire conversation area
-                        stdin: {"message": "...", "summary": "...", "pending": true}
+    cotodo reply <id>   Write a reply to a topic by ID (reads JSON from stdin)
+                        stdin: {"context": "...", "summary": "...", "pending": true, "compress": true}
 
     cotodo --version    Show version
 """
@@ -55,19 +53,26 @@ def main():
 
     elif cmd == "scan":
         rest = args[1:]
-        clean = "--clean" in rest
         all_topics = "--all" in rest
-        take = "--take" in rest
         positional = [a for a in rest if not a.startswith("--")]
         filepath = positional[0] if positional else "TODO.md"
 
+        # Auto-init if file doesn't exist
+        if not all_topics and not os.path.exists(filepath):
+            from .parser import init
+            init(filepath)
+
         from .parser import scan
-        result = scan(filepath, clean=clean, all_topics=all_topics, take=take)
+        if all_topics:
+            # --all: read-only mode for debugging
+            result = scan(filepath, clean=False, all_topics=True, take=False)
+        else:
+            # Default: clean + take
+            result = scan(filepath, clean=True, all_topics=False, take=True)
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
     elif cmd == "reply":
         rest = args[1:]
-        compress = "--compress" in rest
         positional = [a for a in rest if not a.startswith("--")]
         if not positional:
             print('{"ok": false, "error": "missing topic id"}')
@@ -86,10 +91,10 @@ def main():
         result = reply(
             filepath=filepath,
             topic_id=topic_id,
-            message=data.get("message"),
+            context=data.get("context", data.get("message")),
             summary=data.get("summary"),
             pending=bool(data.get("pending", False)),
-            compress=compress,
+            compress=bool(data.get("compress", False)),
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if not result.get("ok"):

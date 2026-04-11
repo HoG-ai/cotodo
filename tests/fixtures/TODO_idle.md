@@ -4,13 +4,13 @@
 
 PAUSE:
 
-## Discussion notes
+## Discussion notes <!-- cid:0a423d1b -->
 
 User: some question
 Agent: some discussion text without markers.
 User:
 
-## Reference links
+## Reference links <!-- cid:00c27850 -->
 
 User: collect references
 Agent: here are some links

@@ -7,7 +7,6 @@ Reads a TODO.md file and extracts:
 - Summary section content (> **Summary** blockquote)
 """
 
-import hashlib
 import os
 import re
 import tempfile
@@ -19,15 +18,16 @@ RE_PROCESSING = re.compile(r'\[processing\]\s*$')
 RE_PENDING = re.compile(r'\[pending\]\s*$')
 RE_DELETE = re.compile(r'@delete\s*$')
 RE_HEADING = re.compile(r'^##\s+(.+)$')
+RE_CID = re.compile(r'\s*<!--\s*cid:([0-9a-f]{8})\s*-->\s*$')
 RE_PAUSE = re.compile(r'^PAUSE:\s*(.*)$')
 RE_CODE_FENCE = re.compile(r'^```')
 RE_TABLE_ROW = re.compile(r'^\s*\|.*\|\s*$')
 RE_SUMMARY_START = re.compile(r'^>\s*\*\*Summary\*\*\s*(\[(?:pending|processing)\])?\s*$')
 
 
-def _topic_id(title: str) -> str:
-    """Generate a stable 8-char hex ID from topic title."""
-    return hashlib.md5(title.encode('utf-8')).hexdigest()[:8]
+def _gen_cid() -> str:
+    """Generate a random 8-char hex topic ID."""
+    return os.urandom(4).hex()
 
 
 def _strip_inline_code(line: str) -> str:
@@ -136,7 +136,6 @@ def _pick_highest(filepath: str, paused: bool, topics: list) -> dict:
             "file": filepath,
             "marker": "over",
             "topic": _format_topic(over_topics[0]),
-            "queue_depth": len(over_topics),
         }
 
     # Priority 3: pending
@@ -153,18 +152,12 @@ def _pick_highest(filepath: str, paused: bool, topics: list) -> dict:
 
 def _format_topic(t: dict) -> dict:
     """Format a topic for marker-based output (single topic mode)."""
-    marker_line = t['processing'] or t['over'] or t['pending']
-    result = {
+    return {
         "id": t['id'],
         "title": t['title'],
-        "line": t['line'],
-        "end": t['end'],
-        "marker_line": marker_line,
         "context": t['context'],
+        "summary": t.get('summary'),
     }
-    if t.get('summary') is not None:
-        result["summary"] = t['summary']
-    return result
 
 
 def _atomic_write(filepath: str, lines: list) -> None:
@@ -240,11 +233,17 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
                 raw_topics.append(current_topic)
 
             title_raw = heading_match.group(1).strip()
+            # Extract cid if present: <!-- cid:xxxxxxxx -->
+            cid_match = RE_CID.search(title_raw)
+            cid = cid_match.group(1) if cid_match else None
+            if cid_match:
+                title_raw = title_raw[:cid_match.start()].strip()
             has_delete = bool(RE_DELETE.search(title_raw))
             title = RE_DELETE.sub('', title_raw).strip() if has_delete else title_raw
 
             current_topic = {
                 'title': title,
+                'cid': cid,
                 'line': i,
                 'end': i,
                 'delete': has_delete,
@@ -278,8 +277,19 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
         raw_topics.append(current_topic)
 
     # Post-process: normalize markers and extract context
+    # Auto-assign cids to topics that don't have one
+    needs_cid_write = False
     topics = []
     for t in raw_topics:
+        cid = t['cid']
+        if cid is None:
+            cid = _gen_cid()
+            # Inject cid into heading line (t['line'] is 1-based)
+            h_idx = t['line'] - 1
+            h_line = lines[h_idx].rstrip('\n')
+            lines[h_idx] = f"{h_line} <!-- cid:{cid} -->\n"
+            needs_cid_write = True
+
         over_raw = t['_over_all'][-1] if t['_over_all'] else None
         processing_raw = t['_processing_all'][-1] if t['_processing_all'] else None
         pending_raw = t['_pending_all'][-1] if t['_pending_all'] else None
@@ -304,7 +314,7 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
             marker_line = processing or over or pending
 
         topics.append({
-            'id': _topic_id(t['title']),
+            'id': cid,
             'title': t['title'],
             'line': t['line'],
             'end': t['end'],
@@ -315,6 +325,10 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
             'context': _extract_context(lines, t['line'], marker_line),
             'summary': _extract_summary(lines, t['line'], t['end']),
         })
+
+    # Write back auto-assigned cids
+    if needs_cid_write:
+        _atomic_write(filepath, lines)
 
     # --clean: delete @delete topics from file
     if clean:
@@ -328,10 +342,10 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
         result = _pick_highest(filepath, paused, topics)
         if result['marker'] in ('over', 'pending'):
             topic = result['topic']
-            # Find the marker line and replace it by appending [processing]
+            # Find the raw topic data by id
             target_topic = None
             for t in topics:
-                if t['line'] == topic['line']:
+                if t['id'] == topic['id']:
                     target_topic = t
                     break
             if target_topic:
@@ -343,7 +357,6 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
                     _atomic_write(filepath, lines)
                     # Update result to reflect new state
                     result['marker'] = 'processing'
-                    result['topic']['marker_line'] = ml
         return result
 
     # --all: return full topic list
@@ -376,7 +389,7 @@ def _find_summary_range(lines: list, start: int, end: int):
 
 
 def _find_topic_bounds(lines: list, topic_id: str):
-    """Find a topic by hash ID. Returns (heading_idx, end_idx) as 0-based indices.
+    """Find a topic by cid. Returns (heading_idx, end_idx) as 0-based indices.
 
     heading_idx: the `##` heading line (0-based)
     end_idx: exclusive end (next heading or EOF)
@@ -395,27 +408,26 @@ def _find_topic_bounds(lines: list, topic_id: str):
         if heading_match:
             if found_idx is not None:
                 return (found_idx, i)
-            title_raw = heading_match.group(1).strip()
-            title = RE_DELETE.sub('', title_raw).strip() if RE_DELETE.search(title_raw) else title_raw
-            if _topic_id(title) == topic_id:
+            cid_match = RE_CID.search(heading_match.group(1))
+            if cid_match and cid_match.group(1) == topic_id:
                 found_idx = i
     if found_idx is not None:
         return (found_idx, len(lines))
     return None
 
 
-def reply(filepath: str, topic_id: str, message: str = None,
+def reply(filepath: str, topic_id: str, context: str = None,
           summary: str = None, pending: bool = False,
           compress: bool = False) -> dict:
     """Reply to a topic: append conversation, update Summary, manage markers.
 
     Args:
         filepath: Path to TODO.md file.
-        topic_id: 8-char hex hash ID (from scan output).
-        message: Agent reply text to append (or full conversation if compress=True).
+        topic_id: Persistent 8-char hex cid (from scan output).
+        context: Agent reply text to append (or full conversation if compress=True).
         summary: Summary content to write (overwrites existing). None = no change.
         pending: If True, mark topic as [pending] (has plan, not executing yet).
-        compress: If True, message replaces entire conversation area.
+        compress: If True, context replaces entire conversation area.
 
     Returns:
         dict with operation result.
@@ -495,13 +507,13 @@ def reply(filepath: str, topic_id: str, message: str = None,
         old_summary_lines = []
         after_summary = []
 
-    # --- Step 3: Handle message ---
-    if compress and message is not None:
+    # --- Step 3: Handle context ---
+    if compress and context is not None:
         # Replace entire conversation
-        conv_lines = ['\n', message.rstrip('\n') + '\n']
-    elif message is not None:
-        # Append Agent: message
-        conv_lines.append(f'\nAgent: {message.rstrip()}\n')
+        conv_lines = ['\n', context.rstrip('\n') + '\n']
+    elif context is not None:
+        # Append Agent: context
+        conv_lines.append(f'\nAgent: {context.rstrip()}\n')
 
     # --- Step 4: Handle summary ---
     if summary is not None:

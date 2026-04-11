@@ -1,9 +1,9 @@
 """End-to-end integration test for all cotodo commands."""
 import os
-import json
 import tempfile
 import shutil
-from cotodo.parser import init, scan, reply, _topic_id
+from cotodo.parser import init, scan, reply
+from conftest import topic_id
 
 
 def test_full_workflow():
@@ -23,7 +23,6 @@ def test_full_workflow():
         r = scan(filepath)
         assert r['marker'] == 'over'
         assert r['topic']['title'] == 'Fix bug'
-        assert r['queue_depth'] == 2
 
         # Step 4: Take
         r = scan(filepath, take=True)
@@ -36,19 +35,14 @@ def test_full_workflow():
         assert '[processing]' in content
 
         # Step 5: Reply to Fix bug
-        r = reply(filepath, _topic_id('Fix bug'),
-                  message='已修复 auth.py',
+        r = reply(filepath, topic_id(filepath, 'Fix bug'),
+                  context='已修复 auth.py',
                   summary='- [x] 修复完成')
         assert r['ok'] is True
 
         # Verify file after reply
         with open(filepath, encoding='utf-8') as f:
             content = f.read()
-            lines = content.split('\n')
-
-        print("=== File after reply ===")
-        for i, line in enumerate(lines, 1):
-            print(f"{i:3}: {line}")
 
         # Verify markers removed from Fix bug
         assert 'over [processing]' not in content
@@ -66,24 +60,19 @@ def test_full_workflow():
         r = scan(filepath)
         assert r['marker'] == 'over'
         assert r['topic']['title'] == 'Add feature'
-        assert r['queue_depth'] == 1
 
         # Step 7: Reply with pending marker
         r = scan(filepath, take=True)
         assert r['topic']['title'] == 'Add feature'
 
-        r = reply(filepath, _topic_id('Add feature'),
-                  message='方案：添加 toggle 组件',
+        r = reply(filepath, topic_id(filepath, 'Add feature'),
+                  context='方案：添加 toggle 组件',
                   summary='- [ ] 添加 toggle\n- [ ] 更新 CSS',
                   pending=True)
         assert r['ok'] is True
 
         with open(filepath, encoding='utf-8') as f:
             content = f.read()
-
-        print("\n=== File after second reply ===")
-        for i, line in enumerate(content.split('\n'), 1):
-            print(f"{i:3}: {line}")
 
         assert '> **Summary** [pending]' in content
         assert '> - [ ] 添加 toggle' in content
@@ -92,8 +81,6 @@ def test_full_workflow():
         r = scan(filepath)
         assert r['marker'] == 'pending'
         assert r['topic']['title'] == 'Add feature'
-
-        print("\nAll assertions passed!")
 
     finally:
         shutil.rmtree(dir_path, ignore_errors=True)

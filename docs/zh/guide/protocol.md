@@ -110,19 +110,14 @@ PAUSE:          ← 不暂停（仅空白）
 
 ## scan 输出格式
 
-`scan` 命令解析 TODO.md 并返回 JSON。支持两种输出模式和一个可选的清理标志。
+`scan` 命令解析 TODO.md 并返回 JSON。默认行为：自动初始化（首次运行）、清理 @delete 话题、标记最高优先级为 [processing]。
 
 ### 标志
 
 | 标志 | 效果 |
 |------|------|
-| （无） | 只读，返回最高优先级话题 + marker |
-| `--all` | 只读，返回所有话题 |
-| `--clean` | 先删除 `@delete` 话题，再返回结果 |
-| `--clean --all` | 删除 `@delete` 话题后，返回所有剩余话题 |
-| `--take` | 原子地将最高优先级话题标为 `[processing]` 并返回 |
-
-`--take` 使 scan 操作具有写入副作用：返回 JSON 前将话题标记改为 `[processing]`，让用户看到 Agent 已领取任务。通常与 `--clean` 组合使用：`cotodo scan --clean --take`。
+| （无） | 默认行为：初始化 + 清理 @delete + 标记 [processing] + 返回最高优先级话题 |
+| `--all` | 只读，返回所有话题（调试用） |
 
 ### 默认输出（最高优先级）
 
@@ -131,22 +126,29 @@ PAUSE:          ← 不暂停（仅空白）
 ```
 
 ```json
-{"file": "TODO.md", "marker": "processing",
- "topic": {"title": "修复 bug", "line": 10, "end": 25, "marker_line": 15,
-            "context": "User: ...", "summary": "- [ ] auth.py 添加 .lower()"}}
+{
+  "file": "TODO.md",
+  "marker": "over",
+  "topic": {
+    "id": "a1b2c3d4",
+    "title": "修复 bug",
+    "context": "User: 邮箱有大写字母时登录失败\nAgent: 检查中\nUser: 加急",
+    "summary": null
+  }
+}
 ```
 
 ```json
-{"file": "TODO.md", "marker": "over",
- "topic": {"title": "修复 bug", "line": 10, "end": 25, "marker_line": 15,
-            "context": "User: ...", "summary": null},
- "queue_depth": 3}
-```
-
-```json
-{"file": "TODO.md", "marker": "pending",
- "topic": {"title": "修复 bug", "line": 10, "end": 25, "marker_line": 22,
-            "context": "Agent: 方案...", "summary": "- [ ] auth.py 添加 .lower()"}}
+{
+  "file": "TODO.md",
+  "marker": "pending",
+  "topic": {
+    "id": "b2c3d4e5",
+    "title": "修复 bug",
+    "context": "User: 修复登录问题\nAgent: 方案已定",
+    "summary": "- [ ] auth.py 添加 .lower()"
+  }
+}
 ```
 
 ```json

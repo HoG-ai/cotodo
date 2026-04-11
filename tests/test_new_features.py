@@ -1,10 +1,10 @@
 """Tests for new features: Summary parsing, scan --take, reply, init."""
 
-import json
 import os
 import tempfile
 
-from cotodo.parser import scan, reply, init, _topic_id
+from cotodo.parser import scan, reply, init
+from conftest import topic_id
 
 
 def _write_tmp(content: str) -> str:
@@ -106,12 +106,12 @@ class TestSummaryParsing:
         finally:
             os.unlink(path)
 
-    def test_summary_not_in_output_when_absent(self):
+    def test_summary_none_in_output_when_absent(self):
         path = _write_tmp('## Topic A\n\nUser: do it over\n')
         try:
             result = scan(path)
             assert result['marker'] == 'over'
-            assert 'summary' not in result['topic']
+            assert result['topic']['summary'] is None
         finally:
             os.unlink(path)
 
@@ -163,9 +163,10 @@ class TestScanTake:
         try:
             result = scan(path, take=True)
             assert result['marker'] == 'processing'
-            # File should not be modified (already processing)
+            # Content should be preserved (cid injection is allowed)
             content = _read(path)
-            assert content == content_orig
+            assert '## Topic A' in content
+            assert 'User: hello [processing]' in content
         finally:
             os.unlink(path)
 
@@ -204,10 +205,10 @@ class TestScanTake:
 # ============================================================
 
 class TestReply:
-    def test_reply_basic_message(self):
+    def test_reply_basic_context(self):
         path = _write_tmp('## Topic A\n\nUser: hello over\n')
         try:
-            result = reply(path, _topic_id('Topic A'), message='world')
+            result = reply(path, topic_id(path, 'Topic A'), context='world')
             assert result['ok'] is True
             content = _read(path)
             assert 'Agent: world' in content
@@ -218,7 +219,7 @@ class TestReply:
     def test_reply_with_summary(self):
         path = _write_tmp('## Topic A\n\nUser: hello over\n')
         try:
-            result = reply(path, _topic_id('Topic A'), message='done', summary='- task 1\n- task 2')
+            result = reply(path, topic_id(path, 'Topic A'), context='done', summary='- task 1\n- task 2')
             assert result['ok'] is True
             content = _read(path)
             assert 'Agent: done' in content
@@ -231,7 +232,7 @@ class TestReply:
     def test_reply_with_pending_marker(self):
         path = _write_tmp('## Topic A\n\nUser: hello over\n')
         try:
-            reply(path, _topic_id('Topic A'), message='working', summary='plan', pending=True)
+            reply(path, topic_id(path, 'Topic A'), context='working', summary='plan', pending=True)
             content = _read(path)
             assert '> **Summary** [pending]' in content
         finally:
@@ -240,7 +241,7 @@ class TestReply:
     def test_reply_removes_processing_marker(self):
         path = _write_tmp('## Topic A\n\nUser: hello [processing]\n')
         try:
-            reply(path, _topic_id('Topic A'), message='done')
+            reply(path, topic_id(path, 'Topic A'), context='done')
             content = _read(path)
             assert '[processing]' not in content
             assert 'Agent: done' in content
@@ -255,7 +256,7 @@ class TestReply:
             '> old plan\n'
         )
         try:
-            reply(path, _topic_id('Topic A'), message='updated', summary='new plan')
+            reply(path, topic_id(path, 'Topic A'), context='updated', summary='new plan')
             content = _read(path)
             assert '> new plan' in content
             assert 'old plan' not in content
@@ -279,7 +280,7 @@ class TestReply:
     def test_reply_removes_processing_leaves_idle(self):
         path = _write_tmp('## Topic A\n\nUser: hello [processing]\n')
         try:
-            reply(path, _topic_id('Topic A'), message='all done')
+            reply(path, topic_id(path, 'Topic A'), context='all done')
             content = _read(path)
             assert '[processing]' not in content
             assert 'Agent: all done' in content
@@ -294,7 +295,7 @@ class TestReply:
             'User: another message over\n'
         )
         try:
-            reply(path, _topic_id('Topic A'), message='compressed conversation', compress=True)
+            reply(path, topic_id(path, 'Topic A'), context='compressed conversation', compress=True)
             content = _read(path)
             assert 'compressed conversation' in content
             assert 'old message' not in content
@@ -309,7 +310,7 @@ class TestReply:
             '## Topic B\n\nUser: world over\n'
         )
         try:
-            reply(path, _topic_id('Topic A'), message='reply to A')
+            reply(path, topic_id(path, 'Topic A'), context='reply to A')
             content = _read(path)
             assert '## Topic A' in content
             assert '## Topic B' in content
@@ -318,10 +319,10 @@ class TestReply:
         finally:
             os.unlink(path)
 
-    def test_reply_summary_only_no_message(self):
+    def test_reply_summary_only_no_context(self):
         path = _write_tmp('## Topic A\n\nUser: hello over\n')
         try:
-            reply(path, _topic_id('Topic A'), summary='just a plan', pending=True)
+            reply(path, topic_id(path, 'Topic A'), summary='just a plan', pending=True)
             content = _read(path)
             assert '> **Summary** [pending]' in content
             assert '> just a plan' in content

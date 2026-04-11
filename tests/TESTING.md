@@ -17,8 +17,11 @@ PYTHONPATH=skills/cotodo python -m pytest tests/test_parser.py -v
 
 ```
 tests/
+├── conftest.py           # 共享辅助函数（topic_id 等）
 ├── test_parser.py        # 单元测试（内联构造数据，41 个用例）
 ├── test_fixtures.py      # Fixture 集成测试（29 个用例）
+├── test_new_features.py  # 新功能测试：Summary、scan --take、reply、init（31 个用例）
+├── test_e2e.py           # 端到端集成测试：完整工作流（1 个用例）
 └── fixtures/
     ├── TODO_full.md      # 17 个场景：所有标记 + 边界情况
     ├── TODO_paused.md    # PAUSE 激活状态
@@ -130,8 +133,9 @@ PYTHONPATH=skills/cotodo python -m cotodo scan /nonexistent/file.md --all
 
 | 规则 | 原因 |
 |------|------|
-| 非破坏性测试直接使用原始文件 | 无复制开销，可重复运行 |
-| 破坏性测试先复制到临时文件 | 保护 fixture 供下次使用 |
+| 所有测试使用临时副本 | 防止 cid 自动注入污染原始 fixture |
+| 破坏性测试（clean）先复制到临时文件 | 保护 fixture 供下次使用 |
 | 每个 fixture 聚焦一个主要关注点 | 便于定位失败原因 |
 | `TODO_full.md` 覆盖所有边界情况 | 一个文件完成回归检查 |
 | 话题标题包含场景描述 | 测试期望自文档化 |
+| 共享辅助函数放在 conftest.py | 避免重复代码，pytest 自动加载 |

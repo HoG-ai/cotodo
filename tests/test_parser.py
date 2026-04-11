@@ -359,7 +359,6 @@ def test_action_reply_over():
         assert result['marker'] == 'over'
         assert result['topic']['title'] == 'Topic'
         assert result['topic']['context'] == 'User: fix bug'
-        assert result['queue_depth'] == 1
     finally:
         os.unlink(path)
 
@@ -410,20 +409,6 @@ def test_action_priority_reply_over_execute():
         os.unlink(path)
 
 
-def test_action_queue_depth():
-    """queue_depth counts all over topics."""
-    content = '## A\n\nUser: msg1 over\n\n## B\n\nUser: msg2 over\n\n## C\n\nUser: msg3 over\n'
-    path = _write_tmp(content)
-    try:
-        result = scan(path)
-        assert result['marker'] == 'over'
-        assert result['queue_depth'] == 3
-        # First over topic returned
-        assert result['topic']['title'] == 'A'
-    finally:
-        os.unlink(path)
-
-
 # --- --clean tests ---
 
 def test_clean_removes_delete_topics():
@@ -445,14 +430,17 @@ def test_clean_removes_delete_topics():
 
 
 def test_clean_no_delete_topics():
-    """--clean with no @delete topics leaves file unchanged."""
+    """--clean with no @delete topics preserves all content."""
     content = '## Topic\n\nUser: hello over\n'
     path = _write_tmp(content)
     try:
         result = scan(path, clean=True, all_topics=True)
         assert len(result['topics']) == 1
         with open(path, 'r', encoding='utf-8') as f:
-            assert f.read() == content
+            actual = f.read()
+        # Content preserved (heading may have cid injected)
+        assert 'User: hello over' in actual
+        assert '## Topic' in actual
     finally:
         os.unlink(path)
 

@@ -36,8 +36,13 @@ class TestFullFixture:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        self.result = scan(fixture_path('TODO_full.md'), all_topics=True)
-        self.topics = {t['title']: t for t in self.result['topics']}
+        tmp = copy_fixture('TODO_full.md')
+        try:
+            self.result = scan(tmp, all_topics=True)
+            self.topics = {t['title']: t for t in self.result['topics']}
+            yield
+        finally:
+            os.unlink(tmp)
 
     def test_not_paused(self):
         assert self.result['paused'] is False
@@ -163,9 +168,13 @@ class TestFullDefaultMode:
 
     def test_resume_is_highest(self):
         """T8 has [processing] → marker should be 'processing'."""
-        result = scan(fixture_path('TODO_full.md'))
-        assert result['marker'] == 'processing'
-        assert result['topic']['title'] == 'T8 - processing replaces over'
+        tmp = copy_fixture('TODO_full.md')
+        try:
+            result = scan(tmp)
+            assert result['marker'] == 'processing'
+            assert result['topic']['title'] == 'T8 - processing replaces over'
+        finally:
+            os.unlink(tmp)
 
 
 # ===========================================================
@@ -175,15 +184,23 @@ class TestFullDefaultMode:
 class TestPausedFixture:
 
     def test_paused_all_mode(self):
-        result = scan(fixture_path('TODO_paused.md'), all_topics=True)
-        assert result['paused'] is True
-        assert len(result['topics']) == 2
+        tmp = copy_fixture('TODO_paused.md')
+        try:
+            result = scan(tmp, all_topics=True)
+            assert result['paused'] is True
+            assert len(result['topics']) == 2
+        finally:
+            os.unlink(tmp)
 
     def test_paused_default_mode(self):
         """PAUSE overrides all topic priorities."""
-        result = scan(fixture_path('TODO_paused.md'))
-        assert result['marker'] == 'pause'
-        assert 'topic' not in result
+        tmp = copy_fixture('TODO_paused.md')
+        try:
+            result = scan(tmp)
+            assert result['marker'] == 'pause'
+            assert 'topic' not in result
+        finally:
+            os.unlink(tmp)
 
 
 # ===========================================================
@@ -193,16 +210,24 @@ class TestPausedFixture:
 class TestIdleFixture:
 
     def test_idle_all_mode(self):
-        result = scan(fixture_path('TODO_idle.md'), all_topics=True)
-        assert result['paused'] is False
-        for t in result['topics']:
-            assert t['over'] is None
-            assert t['processing'] is None
-            assert t['pending'] is None
+        tmp = copy_fixture('TODO_idle.md')
+        try:
+            result = scan(tmp, all_topics=True)
+            assert result['paused'] is False
+            for t in result['topics']:
+                assert t['over'] is None
+                assert t['processing'] is None
+                assert t['pending'] is None
+        finally:
+            os.unlink(tmp)
 
     def test_idle_default_mode(self):
-        result = scan(fixture_path('TODO_idle.md'))
-        assert result['marker'] == 'idle'
+        tmp = copy_fixture('TODO_idle.md')
+        try:
+            result = scan(tmp)
+            assert result['marker'] == 'idle'
+        finally:
+            os.unlink(tmp)
 
 
 # ===========================================================
@@ -213,17 +238,25 @@ class TestPriorityFixture:
 
     def test_resume_highest_priority(self):
         """processing (P3) should beat over (P2) and pending (P1)."""
-        result = scan(fixture_path('TODO_priority.md'))
-        assert result['marker'] == 'processing'
-        assert result['topic']['title'] == 'P3 - has processing (highest active priority)'
+        tmp = copy_fixture('TODO_priority.md')
+        try:
+            result = scan(tmp)
+            assert result['marker'] == 'processing'
+            assert result['topic']['title'] == 'P3 - has processing (highest active priority)'
+        finally:
+            os.unlink(tmp)
 
     def test_all_topics_markers(self):
-        result = scan(fixture_path('TODO_priority.md'), all_topics=True)
-        topics = {t['title']: t for t in result['topics']}
-        assert topics['P1 - has pending (lowest active priority)']['pending'] is not None
-        assert topics['P2 - has over (higher than pending)']['over'] is not None
-        assert topics['P3 - has processing (highest active priority)']['processing'] is not None
-        assert topics['P4 - idle (no markers)']['over'] is None
+        tmp = copy_fixture('TODO_priority.md')
+        try:
+            result = scan(tmp, all_topics=True)
+            topics = {t['title']: t for t in result['topics']}
+            assert topics['P1 - has pending (lowest active priority)']['pending'] is not None
+            assert topics['P2 - has over (higher than pending)']['over'] is not None
+            assert topics['P3 - has processing (highest active priority)']['processing'] is not None
+            assert topics['P4 - idle (no markers)']['over'] is None
+        finally:
+            os.unlink(tmp)
 
 
 # ===========================================================
@@ -262,12 +295,19 @@ class TestCleanFixture:
             os.unlink(tmp)
 
     def test_clean_no_delete_topics_no_write(self):
-        """If no @delete topics, file should not be modified."""
+        """If no @delete topics, all original content lines should be preserved."""
         tmp = copy_fixture('TODO_idle.md')
         try:
-            mtime_before = os.path.getmtime(tmp)
+            with open(tmp, 'r', encoding='utf-8') as f:
+                lines_before = [l.strip() for l in f.readlines() if l.strip()]
             scan(tmp, clean=True, all_topics=True)
-            mtime_after = os.path.getmtime(tmp)
-            assert mtime_before == mtime_after
+            with open(tmp, 'r', encoding='utf-8') as f:
+                content_after = f.read()
+            # Every non-blank original line must appear in order
+            pos = 0
+            for orig_line in lines_before:
+                idx = content_after.find(orig_line, pos)
+                assert idx != -1, f"Line not found in output: {orig_line!r}"
+                pos = idx + len(orig_line)
         finally:
             os.unlink(tmp)
