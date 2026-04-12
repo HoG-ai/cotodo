@@ -52,7 +52,7 @@ def test_full_workflow():
         assert '> **Summary**' in content
         assert '> - [x] 修复完成' in content
         # Verify User: prompt added
-        assert '\nUser:\n' in content
+        assert '\nUser: \n' in content
         # Verify Add feature still has over
         assert '加功能 over' in content
 

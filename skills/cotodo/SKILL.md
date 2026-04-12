@@ -47,11 +47,12 @@ scan 自动完成初始化、清理和锁定。返回**一个**最高优先级�
 
 **context**：完整对话（`User: ...\nAgent: ...` 交替），最后一条 `User:` 是最新消息。
 
-**summary**：任务计划或结论摘要；pending 话题的 summary 是待执行方案；null = 尚无。**复杂任务必须写工作计划**，格式：
+**summary**：任务计划或结论摘要；pending 话题的 summary 是待执行方案；null = 尚无。
+
+- **简单任务**（直接得出答案）：summary 写结论/答案，不需要工作计划
+- **复杂任务**（多步骤）：summary 必须写工作计划，格式：
 
 ```
-**Summary**
-
 结论要点、解决方案等信息
 
 工作计划：
@@ -71,14 +72,14 @@ echo '<json>' | cotodo reply <id>
 JSON 模板：
 ```json
 {
-  "context": "Agent: 回复内容",
+  "context": "回复内容",
   "summary": "更新后的计划/结论"
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `context` | string | 回复内容（以 `Agent:` 开头），或压缩后的上下文 |
+| `context` | string | 回复内容（parser 自动添加 `Agent:` 前缀），或压缩后的上下文 |
 | `summary` | string\|null | 更新计划/结论（**覆盖**旧 summary）；无变化则省略 |
 | `pending` | bool | true = 方案已定，挂起排队；默认 false |
 | `compress` | bool | true = context 替换整个对话区；默认 false（追加到对话末尾） |

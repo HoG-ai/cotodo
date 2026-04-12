@@ -176,6 +176,46 @@ def _atomic_write(filepath: str, lines: list) -> None:
         raise
 
 
+def _normalize_format(filepath: str, lines: list) -> None:
+    """Normalize formatting: collapse consecutive blank lines, deduplicate User: prompts."""
+    changed = False
+    result = []
+    prev_blank = False
+    for line in lines:
+        is_blank = line.strip() == ''
+        if is_blank and prev_blank:
+            changed = True
+            continue  # skip consecutive blank lines
+        result.append(line)
+        prev_blank = is_blank
+
+    # Deduplicate consecutive "User:" lines (keep last)
+    final = []
+    i = 0
+    while i < len(result):
+        # Look ahead for consecutive User: lines (possibly separated by blank lines)
+        if re.match(r'^User:\s*$', result[i]):
+            # Collect consecutive User: + blank line groups
+            j = i + 1
+            while j < len(result):
+                stripped = result[j].strip()
+                if stripped == '' or re.match(r'^User:\s*$', stripped):
+                    j += 1
+                else:
+                    break
+            # Keep only the last User: line from the group
+            if j - i > 1:
+                changed = True
+            final.append('User: \n')
+            i = j
+        else:
+            final.append(result[i])
+            i += 1
+
+    if changed:
+        _atomic_write(filepath, final)
+
+
 def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = False,
          take: bool = False) -> dict:
     """Parse TODO.md and return structured state as a dict.
@@ -330,12 +370,19 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
     if needs_cid_write:
         _atomic_write(filepath, lines)
 
-    # --clean: delete @delete topics from file
+    # --clean: delete @delete topics and normalize formatting
     if clean:
         delete_topics = [t for t in topics if t['delete']]
         if delete_topics:
             _atomic_remove(filepath, lines, delete_topics)
             topics = [t for t in topics if not t['delete']]
+        # Re-read file for normalization (file may have been modified by _atomic_remove or cid write)
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                current_lines = f.readlines()
+            _normalize_format(filepath, current_lines)
+        except FileNotFoundError:
+            pass
 
     # --take: atomically mark the highest priority topic as [processing]
     if take:
@@ -353,7 +400,11 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
                 if ml:
                     idx = ml - 1  # 0-based
                     old_line = lines[idx].rstrip('\n')
-                    lines[idx] = old_line + ' [processing]\n'
+                    # Remove existing markers, then add [processing]
+                    new_line = RE_OVER.sub('', old_line).rstrip()
+                    new_line = RE_PENDING.sub('', new_line).rstrip()
+                    new_line = new_line + ' [processing]\n'
+                    lines[idx] = new_line
                     _atomic_write(filepath, lines)
                     # Update result to reflect new state
                     result['marker'] = 'processing'
@@ -507,13 +558,21 @@ def reply(filepath: str, topic_id: str, context: str = None,
         old_summary_lines = []
         after_summary = []
 
+    # Merge after_summary (User messages after Summary) into conversation
+    if after_summary:
+        conv_lines.extend(after_summary)
+        after_summary = []
+
     # --- Step 3: Handle context ---
     if compress and context is not None:
         # Replace entire conversation
         conv_lines = ['\n', context.rstrip('\n') + '\n']
     elif context is not None:
-        # Append Agent: context
-        conv_lines.append(f'\nAgent: {context.rstrip()}\n')
+        # Append Agent reply — add "Agent: " prefix if not already present
+        text = context.rstrip()
+        if not text.startswith('Agent:'):
+            text = f'Agent: {text}'
+        conv_lines.append(f'\n{text}\n')
 
     # --- Step 4: Handle summary ---
     if summary is not None:
@@ -521,7 +580,6 @@ def reply(filepath: str, topic_id: str, context: str = None,
         new_summary_lines = [f'\n> **Summary**{marker_suffix}\n']
         for sline in summary.split('\n'):
             new_summary_lines.append(f'> {sline}\n')
-        new_summary_lines.append('\n')
     elif pending and old_summary_lines:
         # Update existing summary header with [pending]
         new_summary_lines = ['\n> **Summary** [pending]\n'] + old_summary_lines[1:]
@@ -534,10 +592,10 @@ def reply(filepath: str, topic_id: str, context: str = None,
         new_summary_lines = []
 
     # --- Step 5: Add User: prompt ---
-    user_prompt = ['\nUser:\n\n']
+    user_prompt = ['\nUser: \n\n']
 
     # --- Step 6: Reassemble ---
-    new_body = conv_lines + new_summary_lines + after_summary + user_prompt
+    new_body = conv_lines + new_summary_lines + user_prompt
 
     # Replace topic in the original lines
     new_lines = lines[:h_idx] + [heading_line] + new_body + lines[t_end:]
