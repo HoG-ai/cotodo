@@ -423,6 +423,18 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
                     new_line = RE_PENDING.sub('', new_line).rstrip()
                     new_line = new_line + ' [processing]\n'
                     lines[idx] = new_line
+                    # Add User: placeholder at end of topic
+                    t_end_idx = target_topic['end']  # 1-based last line
+                    has_following = t_end_idx < len(lines)
+                    # Check if line before insert point is already blank
+                    prev_blank = (t_end_idx > 0 and
+                                  lines[t_end_idx - 1].strip() == '')
+                    prefix = '' if prev_blank else '\n'
+                    if has_following:
+                        user_prompt = f'{prefix}User: \n\n'
+                    else:
+                        user_prompt = f'{prefix}User: \n'
+                    lines.insert(t_end_idx, user_prompt)
                     _atomic_write(filepath, lines)
                     # Update result to reflect new state
                     result['marker'] = 'processing'
@@ -517,9 +529,10 @@ def reply(filepath: str, topic_id: str, context: str = None,
     heading_line = lines[h_idx]
     body = list(lines[h_idx + 1: t_end])
 
-    # --- Step 1: strip all markers from body ---
+    # --- Step 1: strip all markers from body, track processing position ---
     in_code = False
     cleaned_body = []
+    processing_body_idx = None  # Index in cleaned_body where [processing] was
     for bline in body:
         raw = bline.rstrip('\n\r')
         if RE_CODE_FENCE.match(raw):
@@ -535,12 +548,19 @@ def reply(filepath: str, topic_id: str, context: str = None,
 
         check = _strip_inline_code(raw)
         modified = raw
+        has_processing = False
         # Remove markers progressively — order matters because
         # e.g. "over [processing]" has over NOT at end until [processing] is removed
         for pat in [RE_PROCESSING, RE_PENDING, RE_OVER]:
             check_modified = _strip_inline_code(modified)
             if pat.search(check_modified):
+                if pat is RE_PROCESSING:
+                    has_processing = True
                 modified = pat.sub('', modified).rstrip()
+
+        # Track position of [processing] marker
+        if has_processing:
+            processing_body_idx = len(cleaned_body)
 
         # Check if this is a Summary header — preserve but strip marker
         if RE_SUMMARY_START.match(raw):
@@ -576,15 +596,45 @@ def reply(filepath: str, topic_id: str, context: str = None,
         old_summary_lines = []
         after_summary = []
 
-    # Merge after_summary (User messages after Summary) into conversation
+    # Merge after_summary (User messages before [processing]) into conversation.
+    # Messages AFTER [processing] are kept as pending_after (user may be editing).
+    pending_after = []
     if after_summary:
-        conv_lines.extend(after_summary)
+        # Find [processing] position within after_summary
+        if (processing_body_idx is not None and summary_end is not None
+                and processing_body_idx >= summary_end):
+            # proc_rel+1: include the processing line itself (its text is pre-processing content)
+            proc_rel = processing_body_idx - summary_end
+            before_proc = after_summary[:proc_rel + 1]
+            pending_after = after_summary[proc_rel + 1:]
+        else:
+            before_proc = after_summary
+            pending_after = []
+
+        # Strip trailing empty User: placeholder lines (left by take)
+        while before_proc and re.match(r'^User:\s*$', before_proc[-1].strip()):
+            before_proc.pop()
+        while before_proc and before_proc[-1].strip() == '':
+            before_proc.pop()
+        if before_proc:
+            conv_lines.extend(before_proc)
         after_summary = []
 
+    # Strip trailing empty User: placeholder from conv_lines (left by take)
+    while conv_lines and re.match(r'^User:\s*$', conv_lines[-1].strip()):
+        conv_lines.pop()
+    while conv_lines and conv_lines[-1].strip() == '':
+        conv_lines.pop()
+
     # --- Step 3: Handle context ---
-    if compress and context is not None:
-        # Replace entire conversation
-        conv_lines = ['\n', context.rstrip('\n') + '\n']
+    if compress:
+        # Replace entire conversation with context (or clear if context is None)
+        if context is not None:
+            conv_lines = ['\n', context.rstrip('\n') + '\n']
+        else:
+            conv_lines = ['\n']
+        # Discard pending_after in compress mode — full reset
+        pending_after = []
     elif context is not None:
         # Append Agent reply — add "Agent: " prefix if not already present
         text = context.rstrip()
@@ -610,6 +660,12 @@ def reply(filepath: str, topic_id: str, context: str = None,
         new_summary_lines = []
 
     # --- Step 5: Add User: prompt ---
+    # Strip trailing empty User: placeholders from pending_after (left by take)
+    while pending_after and re.match(r'^User:\s*$', pending_after[-1].strip()):
+        pending_after.pop()
+    while pending_after and pending_after[-1].strip() == '':
+        pending_after.pop()
+
     has_following = bool(lines[t_end:])
     if has_following:
         # Separate from next topic with a blank line
@@ -619,7 +675,7 @@ def reply(filepath: str, topic_id: str, context: str = None,
         user_prompt = ['\nUser: \n']
 
     # --- Step 6: Reassemble ---
-    new_body = conv_lines + new_summary_lines + user_prompt
+    new_body = conv_lines + new_summary_lines + pending_after + user_prompt
 
     # Replace topic in the original lines
     new_lines = lines[:h_idx] + [heading_line] + new_body + lines[t_end:]
