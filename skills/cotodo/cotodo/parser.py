@@ -177,7 +177,7 @@ def _atomic_write(filepath: str, lines: list) -> None:
 
 
 def _normalize_format(filepath: str, lines: list) -> None:
-    """Normalize formatting: collapse consecutive blank lines, deduplicate User: prompts."""
+    """Normalize formatting: collapse blank lines, deduplicate User:, add User: prefix."""
     changed = False
     result = []
     prev_blank = False
@@ -190,12 +190,10 @@ def _normalize_format(filepath: str, lines: list) -> None:
         prev_blank = is_blank
 
     # Deduplicate consecutive "User:" lines (keep last)
-    final = []
+    deduped = []
     i = 0
     while i < len(result):
-        # Look ahead for consecutive User: lines (possibly separated by blank lines)
         if re.match(r'^User:\s*$', result[i]):
-            # Collect consecutive User: + blank line groups
             j = i + 1
             while j < len(result):
                 stripped = result[j].strip()
@@ -203,14 +201,34 @@ def _normalize_format(filepath: str, lines: list) -> None:
                     j += 1
                 else:
                     break
-            # Keep only the last User: line from the group
             if j - i > 1:
                 changed = True
-            final.append('User: \n')
+            deduped.append('User: \n')
             i = j
         else:
-            final.append(result[i])
+            deduped.append(result[i])
             i += 1
+
+    # Auto-add "User: " prefix to first content line after ## heading
+    final = deduped
+    for idx in range(len(final)):
+        if RE_HEADING.match(final[idx].rstrip('\n\r')):
+            # Find first non-blank content line after heading
+            for j in range(idx + 1, len(final)):
+                stripped = final[j].strip()
+                if stripped == '':
+                    continue
+                if RE_HEADING.match(stripped):
+                    break  # next topic, no content
+                # Check if it already has User:/Agent: prefix or is a marker/comment
+                if (stripped.startswith('User:') or stripped.startswith('Agent:')
+                        or stripped.startswith('>') or stripped.startswith('<!--')
+                        or stripped.startswith('PAUSE:')):
+                    break
+                # First content line without prefix — add User:
+                final[j] = f'User: {stripped}\n'
+                changed = True
+                break
 
     if changed:
         _atomic_write(filepath, final)
@@ -322,7 +340,7 @@ def scan(filepath: str = 'TODO.md', clean: bool = False, all_topics: bool = Fals
     topics = []
     for t in raw_topics:
         cid = t['cid']
-        if cid is None:
+        if cid is None and not t['delete']:
             cid = _gen_cid()
             # Inject cid into heading line (t['line'] is 1-based)
             h_idx = t['line'] - 1
@@ -592,7 +610,13 @@ def reply(filepath: str, topic_id: str, context: str = None,
         new_summary_lines = []
 
     # --- Step 5: Add User: prompt ---
-    user_prompt = ['\nUser: \n\n']
+    has_following = bool(lines[t_end:])
+    if has_following:
+        # Separate from next topic with a blank line
+        user_prompt = ['\nUser: \n\n']
+    else:
+        # End of file: no trailing blank line
+        user_prompt = ['\nUser: \n']
 
     # --- Step 6: Reassemble ---
     new_body = conv_lines + new_summary_lines + user_prompt
